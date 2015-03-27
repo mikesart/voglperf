@@ -137,7 +137,7 @@ Run vogl w/ SSH on SteamOS
   * Run various commands:
      * `help`
      * `status`
-     * `showfps on`
+     * `fpsshow on`
      * `game start 440`
      * etc.
 
