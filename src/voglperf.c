@@ -64,6 +64,7 @@ static int g_logfile_buf_len = 0;
 static char g_logfile_buf[32 * 1024];
 static int g_logfile_fd = -1;
 static uint64_t g_logfile_time = 0;
+static char g_exec_filename[PATH_MAX];
 
 static int g_msqid = -1;
 
@@ -287,7 +288,7 @@ static void voglperf_logfile_close()
     if (g_logfile_fd == -1)
         return;
 
-    syslog(LOG_INFO, "(voglperf) logfile_close(%s).\n", g_logfile_name);
+    syslog(LOG_INFO, "(voglperf) %s: logfile_close(%s).\n", g_exec_filename, g_logfile_name);
 
     // Flush whatever framerate numbers we've built up.
     voglperf_swap_buffers(NULL, None, 1);
@@ -319,7 +320,7 @@ static int voglperf_logfile_open(const char *logfile_name, uint64_t seconds)
     // Make sure nothing is currently open.
     voglperf_logfile_close();
 
-    syslog(LOG_INFO, "(voglperf) logfile_open(%s) %" PRIu64 " seconds.\n", logfile_name, seconds);
+    syslog(LOG_INFO, "(voglperf) %s: logfile_open(%s) %" PRIu64 " seconds.\n", g_exec_filename, logfile_name, seconds);
 
     g_logfile_fd = open(logfile_name, O_WRONLY | O_CREAT, 0666);
     if (g_logfile_fd == -1)
@@ -340,8 +341,7 @@ static int voglperf_logfile_open(const char *logfile_name, uint64_t seconds)
             snprintf(g_logfile_buf, sizeof(g_logfile_buf),
                      "# %s - %s\n",
                      timebuf, program_invocation_short_name);
-            HANDLE_EINTR(write(g_logfile_fd, g_logfile_buf, strlen(g_logfile_buf)));
-            g_logfile_buf_len = 0;
+            g_logfile_buf_len = strlen(g_logfile_buf);
 
             g_logfile_time = seconds * 1000000000;
 
@@ -454,18 +454,15 @@ static int voglperf_init()
 
     if (!s_inited)
     {
-        char exec_filename[PATH_MAX];
-
         s_inited = 1;
 
         // LOG_INFO, LOG_WARNING, LOG_ERR
         openlog(NULL, LOG_CONS | LOG_PERROR | LOG_PID, LOG_USER);
 
-        get_exec_filename(exec_filename, sizeof(exec_filename));
-        if (is_notrace_app(exec_filename))
+        get_exec_filename(g_exec_filename, sizeof(g_exec_filename));
+        if (is_notrace_app(g_exec_filename))
         {
-            printf("Skipping %s...\n", exec_filename);
-            syslog(LOG_INFO, "(voglperf) Skip hooking %s...\n", exec_filename);
+            syslog(LOG_INFO, "(voglperf) Skip hooking %s...\n", g_exec_filename);
 
             s_inited = -1;
             return s_inited;
@@ -654,7 +651,8 @@ static void voglperf_swap_buffers(Display *dpy, GLXDrawable drawable, int flush_
         if (g_logfile_fd != -1)
         {
             // Add this frame time to our logfile.
-            snprintf(g_logfile_buf + g_logfile_buf_len, sizeof(g_logfile_buf) - g_logfile_buf_len, "%.2f\n", time_frame * g_rcpMILLION);
+            snprintf(g_logfile_buf + g_logfile_buf_len, sizeof(g_logfile_buf) - g_logfile_buf_len,
+                    "%.2f\n", time_frame * g_rcpMILLION);
             g_logfile_buf_len += strlen(g_logfile_buf + g_logfile_buf_len);
         }
 
