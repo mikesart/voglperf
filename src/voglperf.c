@@ -301,7 +301,8 @@ static void voglperf_logfile_close()
         struct mbuf_logfile_stop_t mbuf_stop;
 
         mbuf_stop.mtype = MSGTYPE_LOGFILE_STOP_NOTIFY;
-        strncpy(mbuf_stop.logfile, g_logfile_name, sizeof(mbuf_stop.logfile));
+        strncpy(mbuf_stop.logfile, g_logfile_name, sizeof(mbuf_stop.logfile) - 1);
+        mbuf_stop.logfile[ sizeof(mbuf_stop.logfile) - 1 ] = 0;
 
         int ret = msgsnd(g_msqid, &mbuf_stop, sizeof(mbuf_stop) - sizeof(mbuf_stop.mtype), IPC_NOWAIT);
         if (ret == -1)
@@ -343,14 +344,16 @@ static int voglperf_logfile_open(const char *logfile_name, uint64_t seconds)
 
             g_logfile_time = seconds * 1000000000;
 
-            strncpy(g_logfile_name, logfile_name, sizeof(g_logfile_name));
+            strncpy(g_logfile_name, logfile_name, sizeof(g_logfile_name) - 1);
+            g_logfile_name[ sizeof(g_logfile_name) - 1 ] = 0;
 
             if (g_msqid != -1)
             {
                 struct mbuf_logfile_start_t mbuf_start;
 
                 mbuf_start.mtype = MSGTYPE_LOGFILE_START_NOTIFY;
-                strncpy(mbuf_start.logfile, g_logfile_name, sizeof(mbuf_start.logfile));
+                strncpy(mbuf_start.logfile, g_logfile_name, sizeof(mbuf_start.logfile) - 1);
+                mbuf_start.logfile[ sizeof(mbuf_start.logfile) - 1 ] = 0;
                 mbuf_start.time = seconds;
 
                 int ret = msgsnd(g_msqid, &mbuf_start, sizeof(mbuf_start) - sizeof(mbuf_start.mtype), IPC_NOWAIT);
@@ -401,19 +404,71 @@ static void showfps_set(int showfps)
 #undef LOADX11FUNC
 }
 
+static char *get_exec_filename(char *pPath, size_t dest_len)
+{
+    ssize_t s = readlink("/proc/self/exe", pPath, dest_len);
+    if (s >= 0)
+    {
+        pPath[s] = '\0';
+        return pPath;
+    }
+
+    pPath[0] = '\0';
+
+    return pPath;
+}
+
+static int is_notrace_app(const char *exec_filename)
+{
+    // We really don't want to be hooking terminals running shell scripts to launch the games, and it
+    //  only causes problems when we do wind up in those processes.
+    // So check if we're one of the fairly well known shells and bail if so.
+    static const char *s_notrace[] =
+    {
+        "bash", "dash", "sh", "tcsh", "xterm", "zsh", "zsh5",
+        "cgdb", "gdb", "strace", "desktop-launcher", "glxinfo", "kmod",
+        "python", "python2.7", "python3", "python3.4",
+        "dpkg-query", "grep", "egrep", "head", "free", "lsusb", "uname",
+        "minidump_stackwalk"
+    };
+
+    const char *fname = strrchr(exec_filename, '/');
+    fname = fname ? (fname + 1) : exec_filename;
+
+    for (size_t i = 0; i < sizeof(s_notrace) / sizeof(s_notrace[0]); i++)
+    {
+        if (strncasecmp(fname, s_notrace[i], sizeof(exec_filename)) == 0)
+            return 1;
+    }
+
+    return 0;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // voglperf_init
 //----------------------------------------------------------------------------------------------------------------------
-static void voglperf_init()
+static int voglperf_init()
 {
     static int s_inited = 0;
 
     if (!s_inited)
     {
+        char exec_filename[PATH_MAX];
+
         s_inited = 1;
 
         // LOG_INFO, LOG_WARNING, LOG_ERR
         openlog(NULL, LOG_CONS | LOG_PERROR | LOG_PID, LOG_USER);
+
+        get_exec_filename(exec_filename, sizeof(exec_filename));
+        if (is_notrace_app(exec_filename))
+        {
+            printf("Skipping %s...\n", exec_filename);
+            syslog(LOG_INFO, "(voglperf) Skip hooking %s...\n", exec_filename);
+
+            s_inited = -1;
+            return s_inited;
+        }
 
         char *cmd_line = getenv("VOGLPERF_CMD_LINE");
         if (cmd_line)
@@ -433,7 +488,7 @@ static void voglperf_init()
                     mbuf.mtype = MSGTYPE_PID_NOTIFY;
                     mbuf.pid = getpid();
 
-					int ret = msgsnd(msqid, &mbuf, sizeof(mbuf) - sizeof(mbuf.mtype), IPC_NOWAIT);
+                    int ret = msgsnd(msqid, &mbuf, sizeof(mbuf) - sizeof(mbuf.mtype), IPC_NOWAIT);
                     if (ret == 0)
                         g_msqid = msqid;
 
@@ -444,7 +499,7 @@ static void voglperf_init()
             g_verbose = !!strstr(cmd_line, "--verbose");
 
             showfps_set(!!strstr(cmd_line, "--showfps"));
-        
+
             int debugger_pause = !!strstr(cmd_line, "--debugger-pause");
             if (debugger_pause && isatty(fileno(stdout)))
             {
@@ -499,6 +554,8 @@ static void voglperf_init()
 
         syslog(LOG_INFO, "(voglperf) end initialization\n");
     }
+
+    return s_inited;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -511,7 +568,8 @@ VOGL_API_EXPORT Bool GLAPIENTRY glXMakeCurrent(Display *dpy, GLXDrawable drawabl
     if (!s_orig_func)
         return False;
 
-    voglperf_init();
+    if (voglperf_init() == -1)
+        return (*s_orig_func)(dpy, drawable, ctx);
 
     if (g_verbose)
     {
@@ -733,14 +791,18 @@ VOGL_API_EXPORT void GLAPIENTRY glXSwapBuffers(Display *dpy, GLXDrawable drawabl
     if (!s_orig_func)
         return;
 
-    voglperf_init();
+    if(voglperf_init() == -1)
+    {
+        (*s_orig_func)(dpy, drawable);
+        return;
+    }
 
     if (g_verbose)
     {
         syslog(LOG_INFO, "(voglperf) %s %p %lu\n", __PRETTY_FUNCTION__, dpy, drawable);
     }
 
-    // Call real glxSwapBuffers function.
+    // Call real glXSwapBuffers function.
     (*s_orig_func)(dpy, drawable);
 
     voglperf_swap_buffers(dpy, drawable, 0);
@@ -754,6 +816,9 @@ VOGL_API_EXPORT __GLXextFuncPtr GLAPIENTRY glXGetProcAddressARB(const GLubyte *p
     HOOK_FUNC("glXGetProcAddressARB", __GLXextFuncPtr, const GLubyte *procname);
     if (!s_orig_func)
         return NULL;
+
+    if (voglperf_init() == -1)
+        return (*s_orig_func)(procname);
 
     if (procname)
     {
@@ -830,6 +895,9 @@ VOGL_API_EXPORT void *dlopen(const char *pFile, int mode)
     HOOK_FUNC("dlopen", void *, const char *pFile, int mode);
     if (!s_orig_func)
         return NULL;
+
+    if (voglperf_init() == -1)
+        return (*s_orig_func)(pFile, mode);
 
     if (pFile)
         syslog(LOG_INFO, "(voglperf) dlopen %s %d\n", pFile, mode);
