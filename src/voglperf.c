@@ -42,6 +42,7 @@
 #include <errno.h>
 
 #include <GL/glx.h>
+#include <EGL/egl.h>
 
 #include "voglperf.h"
 
@@ -429,7 +430,7 @@ static int is_notrace_app(const char *exec_filename)
         "cgdb", "gdb", "strace", "desktop-launcher", "glxinfo", "kmod",
         "python", "python2.7", "python3", "python3.4",
         "dpkg-query", "grep", "egrep", "head", "free", "lsusb", "uname",
-        "minidump_stackwalk"
+        "minidump_stackwalk", "pulseaudio"
     };
 
     const char *fname = strrchr(exec_filename, '/');
@@ -840,6 +841,55 @@ VOGL_API_EXPORT __GLXextFuncPtr GLAPIENTRY glXGetProcAddressARB(const GLubyte *p
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+// eglSwapBuffers interceptor
+//----------------------------------------------------------------------------------------------------------------------
+VOGL_API_EXPORT EGLAPI EGLBoolean EGLAPIENTRY eglSwapBuffers(EGLDisplay dpy, EGLSurface surface)
+{
+    HOOK_FUNC("eglSwapBuffers", Bool, EGLDisplay dpy, EGLSurface surface);
+    if (!s_orig_func)
+        return 0;
+
+    if(voglperf_init() == -1)
+        return (*s_orig_func)(dpy, surface);
+
+    if (g_verbose)
+    {
+        syslog(LOG_INFO, "(voglperf) %s %p %p\n", __PRETTY_FUNCTION__, dpy, surface);
+    }
+
+    // Call real eglSwapBuffers function.
+    EGLBoolean ret = (*s_orig_func)(dpy, surface);
+
+    voglperf_swap_buffers(NULL, None, 0);
+
+    return ret;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// eglGetProcAddress interceptor
+//----------------------------------------------------------------------------------------------------------------------
+VOGL_API_EXPORT EGLAPI __eglMustCastToProperFunctionPointerType EGLAPIENTRY eglGetProcAddress(char const *procname)
+{
+    HOOK_FUNC("eglGetProcAddress", __eglMustCastToProperFunctionPointerType, char const *procname);
+    if (!s_orig_func)
+        return NULL;
+
+    if (voglperf_init() == -1)
+        return (*s_orig_func)(procname);
+
+    if (procname)
+    {
+        if (!strcmp((const char *)procname, "eglSwapBuffers"))
+        {
+            syslog(LOG_INFO, "(voglperf) %s hooking %s.\n", __FUNCTION__, procname);
+            return (__eglMustCastToProperFunctionPointerType)eglSwapBuffers;
+        }
+    }
+
+    return (*s_orig_func)(procname);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // get_current_module_fname
 //----------------------------------------------------------------------------------------------------------------------
 const char * __attribute__ ((noinline)) get_current_module_fname()
@@ -904,7 +954,7 @@ VOGL_API_EXPORT void *dlopen(const char *pFile, int mode)
 
     // When folks try to dlopen libGL, return handle to our module instead.
     // This puts our interposed functions at the top of the namespace.
-    if (pFile && (strstr(pFile, "libGL.so") != NULL))
+    if (pFile && (strstr(pFile, "libGL.so") || strstr(pFile, "libEGL.so")))
     {
         // Workaround for amd driver as they really do need libGL or we may crash.
         const char *calling_module = get_calling_module_name();

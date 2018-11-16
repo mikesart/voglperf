@@ -3,6 +3,8 @@
     glXSwapBuffers;
     glXMakeCurrent;
     glXGetProcAddressARB;
+    eglSwapBuffers;
+    eglGetProcAddress;
     dlopen;
   local:
     *;

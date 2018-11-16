@@ -33,6 +33,7 @@ target_link_libraries(${PROJECT_NAME}
     m
     ${CMAKE_THREAD_LIBS_INIT}
     "${CMAKE_SOURCE_DIR}/libGL/${LIBDIR}/libGL.so"
+    "${CMAKE_SOURCE_DIR}/libEGL/${LIBDIR}/libEGL.so"
     )
 
 build_options_finalize()
@@ -43,13 +44,6 @@ build_options_finalize()
 project(voglperfrun)
 
 # Add libedit library.
-#include_directories(${CMAKE_SOURCE_DIR}/libedit-3.1/include)
-#find_library(tinfo_LIBRARY NAMES tinfo curses)
-#set(LIBEDIT_LIBS
-#    "${CMAKE_SOURCE_DIR}/libedit-3.1/lib/${LIBDIR}/libedit.a"
-#    ${tinfo_LIBRARY}
-#    )
-
 find_library(LIBEDIT_LIBS edit)
 
 set(SRC_LIST
